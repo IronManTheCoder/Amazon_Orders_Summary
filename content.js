@@ -1,4 +1,4 @@
-// content.js — Simple Amazon order scanner for first page only
+// content.js — Amazon order scanner for content script
 
 function scanFirstPageOrders() {
   console.log('🔍 Scanning first page for orders...');
@@ -6,13 +6,32 @@ function scanFirstPageOrders() {
   let totalAmount = 0;
   let orderCount = 0;
   const processedAmounts = new Set(); // Track unique amounts to avoid duplicates
+  const debugInfo = {
+    totalElements: 0,
+    elementsWithMoney: 0,
+    elementsWithOrderText: 0,
+    elementsWithMonth: 0,
+    elementsPassedAllChecks: 0,
+    skippedReasons: {
+      noMoney: 0,
+      duplicateAmount: 0,
+      noOrderText: 0,
+      noMonth: 0,
+      tooSmall: 0,
+      javascript: 0
+    }
+  };
   
-  // Look for order containers first
+  // Look for order containers first - prioritize more specific selectors
   const orderSelectors = [
+    'li.order-card__list',
+    '.order-card',
     '.a-box-group',
     '[class*="order"]',
     '[class*="shipment"]',
-    '.a-card'
+    '.a-card',
+    '[data-testid*="order"]',
+    '[class*="order-item"]'
   ];
   
   let orderElements = [];
@@ -41,111 +60,222 @@ function scanFirstPageOrders() {
     console.log(`Found ${orderElements.length} potential order elements by content`);
   }
   
+  debugInfo.totalElements = orderElements.length;
+  
   orderElements.forEach((element, index) => {
     const text = element.textContent;
     
-    // Look for dollar amounts in the text
-    const moneyMatches = text.match(/\$(\d+(?:\.\d{2})?)/g);
+    // Skip JavaScript elements
+    // if (text.includes('window.uet') || text.includes('performance.mark') || 
+    //     text.includes('function(') || text.length < 50) {
+    //   debugInfo.skippedReasons.javascript++;
+    //   console.log(`❌ Skipped - JavaScript:`, text.substring(0, 100));
+    //   return;
+    // }
     
-    if (moneyMatches && moneyMatches.length > 0) {
-      // Extract the largest amount (likely the order total)
-      const amounts = moneyMatches.map(match => parseFloat(match.replace('$', '')));
-      const maxAmount = Math.max(...amounts);
-      
-      // Only count if it's a reasonable order amount and we haven't seen it before
-      if (maxAmount >= 0.01 && !processedAmounts.has(maxAmount)) {
-        // Additional check: make sure this looks like an actual order
-        // Must contain "Order placed" AND "Total" AND a month name
-        if (text.includes('Order placed') && 
-            text.includes('Total') && 
-            (text.includes('Jan') || text.includes('Feb') || text.includes('Mar') || 
-             text.includes('Apr') || text.includes('May') || text.includes('Jun') ||
-             text.includes('Jul') || text.includes('Aug') || text.includes('Sep') || 
-             text.includes('Oct') || text.includes('Nov') || text.includes('Dec'))) {
-          console.log(`Found order amount: $${maxAmount} in element:`, text.substring(0, 150));
-          totalAmount += maxAmount;
-          orderCount++;
-          processedAmounts.add(maxAmount);
+    // Look for the specific "Total" element structure - try multiple patterns
+    let totalElement = null;
+    let totalText = '';
+    
+    // Pattern 1: Original specific structure
+    totalElement = element.querySelector('.a-column.a-span2 .order-header__header-list-item .a-row:last-child .a-size-base');
+    
+    // Pattern 2: Alternative structure where amount is in any .a-row with .a-size-base
+    if (!totalElement) {
+      totalElement = element.querySelector('.a-column.a-span2 .order-header__header-list-item .a-row .a-size-base');
+    }
+    
+    // Pattern 3: Look for any element with "Total" text and then find the amount
+    if (!totalElement) {
+      const totalLabel = element.querySelector('.a-column.a-span2 .order-header__header-list-item .a-row .a-text-caps');
+      if (totalLabel && totalLabel.textContent.trim().toLowerCase().includes('total')) {
+        // Find the amount in the next sibling row
+        const nextRow = totalLabel.closest('.a-row').nextElementSibling;
+        if (nextRow) {
+          totalElement = nextRow.querySelector('.a-size-base');
         }
+      }
+    }
+    
+    // Pattern 4: Look for any .a-size-base that contains a dollar amount
+    if (!totalElement) {
+      const sizeBaseElements = element.querySelectorAll('.a-size-base');
+      for (const el of sizeBaseElements) {
+        if (el.textContent.match(/\$(\d+\.\d{2})/)) {
+          totalElement = el;
+          break;
+        }
+      }
+    }
+    
+    // Pattern 5: Handle the specific structure with additional classes (a-color-secondary, aok-break-word)
+    if (!totalElement) {
+      totalElement = element.querySelector('.a-column.a-span2 .order-header__header-list-item .a-row .a-size-base.a-color-secondary.aok-break-word');
+    }
+    
+    // Pattern 6: More flexible search for total elements with any combination of classes
+    if (!totalElement) {
+      const totalElements = element.querySelectorAll('.a-column.a-span2 .order-header__header-list-item .a-row .a-size-base');
+      for (const el of totalElements) {
+        if (el.textContent.match(/\$(\d+\.\d{2})/)) {
+          totalElement = el;
+          break;
+        }
+      }
+    }
+    
+    if (totalElement) {
+      totalText = totalElement.textContent.trim();
+      const totalMatch = totalText.match(/\$(\d+\.\d{2})/);
+      
+      if (totalMatch) {
+        const orderTotal = parseFloat(totalMatch[1]);
+        debugInfo.elementsWithMoney++;
+        
+        // Only count if it's a reasonable order amount and we haven't seen it before
+        if (orderTotal >= 0.01 && !processedAmounts.has(orderTotal)) {
+          // Check for order text in the parent element
+          const hasOrderText = text.includes('Order placed') || text.includes('Order #') || text.includes('Ordered');
+          if (hasOrderText) {
+            debugInfo.elementsWithOrderText++;
+          }
+          
+          // Debug logging for duplicate detection
+          if (processedAmounts.has(orderTotal)) {
+            console.log(`🔄 Duplicate amount detected: $${orderTotal} - skipping`);
+          }
+          
+          // Check for month names (expanded list)
+          const hasMonth = /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b/i.test(text);
+          if (hasMonth) {
+            debugInfo.elementsWithMonth++;
+          }
+          
+          // Additional check: make sure this looks like an actual order
+          if (hasOrderText && hasMonth) {
+            debugInfo.elementsPassedAllChecks++;
+            console.log(`✅ Found order total: $${orderTotal} in element:`, text.substring(0, 150));
+            totalAmount += orderTotal;
+            orderCount++;
+            processedAmounts.add(orderTotal);
+          } else {
+            if (!hasOrderText) {
+              debugInfo.skippedReasons.noOrderText++;
+              console.log(`❌ Skipped $${orderTotal} - No order text:`, text.substring(0, 100));
+            }
+            if (!hasMonth) {
+              debugInfo.skippedReasons.noMonth++;
+              console.log(`❌ Skipped $${orderTotal} - No month:`, text.substring(0, 100));
+            }
+          }
+          
+          } else {
+          if (orderTotal < 0.01) {
+            debugInfo.skippedReasons.tooSmall++;
+          }
+          if (processedAmounts.has(orderTotal)) {
+            debugInfo.skippedReasons.duplicateAmount++;
+          }
+        }
+      } else {
+        debugInfo.skippedReasons.noMoney++;
+      }
+    } else {
+      // Fallback to old method if the specific structure isn't found
+      const moneyMatches = text.match(/\$(\d+\.\d{2})/g);
+      
+      if (moneyMatches && moneyMatches.length > 0) {
+        debugInfo.elementsWithMoney++;
+        
+        // Extract the largest amount (likely the order total)
+        const amounts = moneyMatches.map(match => parseFloat(match.replace('$', '')));
+        const maxAmount = Math.max(...amounts);
+        
+        // Only count if it's a reasonable order amount and we haven't seen it before
+        if (maxAmount >= 0.01 && !processedAmounts.has(maxAmount)) {
+          // Check for order text
+          const hasOrderText = text.includes('Order placed') || text.includes('Total') || text.includes('Order #');
+          if (hasOrderText) {
+            debugInfo.elementsWithOrderText++;
+          }
+          
+          // Check for month names (expanded list)
+          const hasMonth = /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b/i.test(text);
+          if (hasMonth) {
+            debugInfo.elementsWithMonth++;
+          }
+          
+          // Additional check: make sure this looks like an actual order
+          if (hasOrderText && hasMonth) {
+            debugInfo.elementsPassedAllChecks++;
+            console.log(`✅ Found order amount (fallback): $${maxAmount} in element:`, text.substring(0, 150));
+            totalAmount += maxAmount;
+            orderCount++;
+            processedAmounts.add(maxAmount);
+          } else {
+            if (!hasOrderText) {
+              debugInfo.skippedReasons.noOrderText++;
+              console.log(`❌ Skipped $${maxAmount} - No order text:`, text.substring(0, 100));
+            }
+            if (!hasMonth) {
+              debugInfo.skippedReasons.noMonth++;
+              console.log(`❌ Skipped $${maxAmount} - No month:`, text.substring(0, 100));
+            }
+          }
+          
+        } else {
+          if (maxAmount < 0.01) {
+            debugInfo.skippedReasons.tooSmall++;
+          }
+          if (processedAmounts.has(maxAmount)) {
+            debugInfo.skippedReasons.duplicateAmount++;
+          }
+        }
+      } else {
+        debugInfo.skippedReasons.noMoney++;
       }
     }
   });
   
+  // Enhanced logging
+  console.log('📊 DEBUG INFO:');
+  console.log(`  Total elements scanned: ${debugInfo.totalElements}`);
+  console.log(`  Elements with money: ${debugInfo.elementsWithMoney}`);
+  console.log(`  Elements with order text: ${debugInfo.elementsWithOrderText}`);
+  console.log(`  Elements with month: ${debugInfo.elementsWithMonth}`);
+  console.log(`  Elements passed all checks: ${debugInfo.elementsPassedAllChecks}`);
+  console.log('📊 SKIPPED REASONS:');
+  console.log(`  No money: ${debugInfo.skippedReasons.noMoney}`);
+  console.log(`  Duplicate amount: ${debugInfo.skippedReasons.duplicateAmount}`);
+  console.log(`  No order text: ${debugInfo.skippedReasons.noOrderText}`);
+  console.log(`  No month: ${debugInfo.skippedReasons.noMonth}`);
+  console.log(`  Too small: ${debugInfo.skippedReasons.tooSmall}`);
+  console.log(`  JavaScript: ${debugInfo.skippedReasons.javascript}`);
+  
+  // Additional debugging to understand why we might be missing orders
+  console.log(`🔍 ADDITIONAL DEBUG:
+    Processed amounts: [${Array.from(processedAmounts).join(', ')}]
+    Order elements found: ${orderElements.length}
+    Elements with money (debug): ${debugInfo.elementsWithMoney}
+    Elements passed all checks (debug): ${debugInfo.elementsPassedAllChecks}
+  `);
+  
+  // Debug: Show which elements don't have money
+  console.log('🔍 ELEMENTS WITHOUT MONEY:');
+  let elementsWithoutMoney = 0;
+  orderElements.forEach((element, index) => {
+    const text = element.textContent;
+    const hasMoney = text.match(/\$(\d+\.\d{2})/);
+    if (!hasMoney) {
+      elementsWithoutMoney++;
+      console.log(`  Element ${index + 1} (no money):`, text.substring(0, 200));
+      console.log(`  Classes: ${element.className}`);
+      console.log(`  Tag: ${element.tagName}`);
+    }
+  });
+  console.log(`  Total elements without money: ${elementsWithoutMoney}`);
+  
   console.log(`📊 First page results: $${totalAmount.toFixed(2)} from ${orderCount} orders`);
-  
-  // Additional check: if we're on an orders page but found no orders, check if page indicates no orders
-  if (orderCount === 0) {
-    const pageText = document.body.textContent.toLowerCase();
-    if (pageText.includes('no orders') || pageText.includes('0 orders') || 
-        pageText.includes('no items') || pageText.includes('nothing here')) {
-      console.log('⚠️ Page indicates no orders available');
-    }
-  }
-  
-  return { total: totalAmount, count: orderCount };
-}
-
-// Scan orders directly from HTML string (fallback method)
-function scanOrdersFromHTML(html) {
-  console.log('🔍 Scanning orders directly from HTML...');
-  
-  let totalAmount = 0;
-  let orderCount = 0;
-  const processedAmounts = new Set();
-  
-  // Look for order patterns in the raw HTML
-  // Pattern 1: Look for order total patterns in visible text
-  const orderTotalPatterns = [
-    /Order\s+total[^$]*\$(\d+\.\d{2})/gi,
-    /Total[^$]*\$(\d+\.\d{2})/gi,
-    /Grand\s+total[^$]*\$(\d+\.\d{2})/gi,
-    /"orderTotal"[^$]*\$(\d+\.\d{2})/gi,
-    /"total"[^$]*\$(\d+\.\d{2})/gi
-  ];
-  
-  // Pattern 2: Look for structured order data in JSON/JavaScript
-  const structuredPatterns = [
-    /"price":\s*"?\$?(\d+\.\d{2})"?/gi,
-    /"amount":\s*"?\$?(\d+\.\d{2})"?/gi,
-    /"orderTotal":\s*"?\$?(\d+\.\d{2})"?/gi,
-    /"displayPrice":\s*"?\$?(\d+\.\d{2})"?/gi,
-    /"totalAmount":\s*"?\$?(\d+\.\d{2})"?/gi
-  ];
-  
-  // Pattern 3: Look for Amazon's JavaScript payload patterns
-  const payloadPatterns = [
-    /elementId[^}]*price[^}]*\$(\d+\.\d{2})/gi,
-    /payload[^}]*total[^}]*\$(\d+\.\d{2})/gi,
-    /orderData[^}]*amount[^}]*\$(\d+\.\d{2})/gi,
-    /\$(\d+\.\d{2})[^}]*Order\s+placed/gi,
-    /Order\s+placed[^}]*\$(\d+\.\d{2})/gi
-  ];
-  
-  // Try each pattern
-  for (const pattern of [...orderTotalPatterns, ...structuredPatterns, ...payloadPatterns]) {
-    let match;
-    while ((match = pattern.exec(html)) !== null) {
-      const amount = parseFloat(match[1]);
-      if (amount >= 0.01 && !processedAmounts.has(amount)) {
-        // Look for date context around this amount
-        const contextStart = Math.max(0, match.index - 500);
-        const contextEnd = Math.min(html.length, match.index + 500);
-        const context = html.substring(contextStart, contextEnd);
-        
-        // Check if this looks like a real order (has date context)
-        const hasDateContext = /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}/i.test(context);
-        
-        if (hasDateContext) {
-          console.log(`Found order via HTML pattern: $${amount}`);
-          totalAmount += amount;
-          orderCount++;
-          processedAmounts.add(amount);
-        }
-      }
-    }
-  }
-  
-  console.log(`📊 HTML pattern results: $${totalAmount.toFixed(2)} from ${orderCount} orders`);
   return { total: totalAmount, count: orderCount };
 }
 
@@ -195,799 +325,87 @@ function getSelectedTimePeriod() {
 
 // Find the next page link
 function findNextPageLink() {
-  console.log('🔍 Looking for next page link...');
-  
   const nextSelectors = [
     'a[aria-label*="Next"]',
     'a[title*="Next"]',
     '.a-pagination .a-last a',
     '.a-pagination-next',
     'a[class*="next"]',
-    'a[class*="pagination"]',
-    'a[aria-label*="next"]',
-    'a[title*="next"]'
+    'a[class*="pagination"]'
   ];
   
   for (const selector of nextSelectors) {
     const link = document.querySelector(selector);
     if (link && link.href && !link.disabled) {
-      console.log(`Found next page link with selector: ${selector} -> ${link.href}`);
       return link.href;
     }
   }
   
-  // Look for pagination links with numbers (higher page numbers)
-  const paginationLinks = document.querySelectorAll('.a-pagination a, [class*="pagination"] a, a[href*="startIndex"]');
-  console.log(`Found ${paginationLinks.length} pagination links`);
-  
-  let highestPageUrl = null;
-  let highestPageNum = 0;
-  
-  // Get current page's startIndex to find the next sequential page
-  const currentUrl = new URL(window.location.href);
-  const currentStartIndex = parseInt(currentUrl.searchParams.get('startIndex') || '0');
-  
-  let bestNextLink = null;
-  let smallestNextStartIndex = Infinity;
-  
+  // Look for pagination links with numbers
+  const paginationLinks = document.querySelectorAll('.a-pagination a, [class*="pagination"] a');
   for (const link of paginationLinks) {
-    const text = link.textContent.trim();
-    const href = link.href;
-    
-    console.log(`Checking link: "${text}" -> ${href}`);
-    
-    // Check for "Next" text first (highest priority)
-    if (text.toLowerCase().includes('next') && href && !link.classList.contains('a-disabled')) {
-      console.log(`Found "Next" link: ${href}`);
-      return href;
-    }
-    
-    // Look for startIndex parameter in URLs to find the next sequential page
-    const startIndexMatch = href.match(/startIndex=(\d+)/);
-    if (startIndexMatch) {
-      const startIndex = parseInt(startIndexMatch[1]);
-      
-      // Find the smallest startIndex that's greater than current (next page)
-      if (startIndex > currentStartIndex && startIndex < smallestNextStartIndex) {
-        smallestNextStartIndex = startIndex;
-        bestNextLink = href;
-      }
-    }
-    
-    // Also check page numbers as fallback
-    const pageMatch = text.match(/^(\d+)$/);
-    if (pageMatch) {
-      const pageNum = parseInt(pageMatch[1]);
-      if (pageNum > highestPageNum) {
-        highestPageNum = pageNum;
-        highestPageUrl = href;
-      }
+    if (link.textContent.match(/\d+/) && link.href) {
+      return link.href;
     }
   }
   
-  // Return the best next link (sequential startIndex)
-  if (bestNextLink) {
-    console.log(`Found next sequential page: ${bestNextLink} (startIndex: ${smallestNextStartIndex})`);
-    return bestNextLink;
-  }
-  
-  // Look for startIndex parameter in URLs (Amazon pagination)
-  const startIndexLinks = document.querySelectorAll('a[href*="startIndex"]');
-  console.log(`Found ${startIndexLinks.length} startIndex links`);
-  
-  for (const link of startIndexLinks) {
-    const href = link.href;
-    const startIndexMatch = href.match(/startIndex=(\d+)/);
-    if (startIndexMatch) {
-      const startIndex = parseInt(startIndexMatch[1]);
-      console.log(`Found startIndex link: ${href} (index: ${startIndex})`);
-      return href;
-    }
-  }
-  
-  if (highestPageUrl) {
-    console.log(`Using highest page number link: ${highestPageUrl}`);
-    return highestPageUrl;
-  }
-  
-  console.log('No next page link found');
   return null;
 }
 
-// Continue auto-scan after page navigation
-async function continueAutoScan(ui, timePeriod, currentPage) {
-  console.log(`📄 Scanning page ${currentPage}...`);
-  ui.update(manualTotal, manualCount, `Scanning page ${currentPage}...`, timePeriod);
-  
-  // Get visited URLs from sessionStorage to avoid duplicates
-  let visitedUrls = [];
-  const progressData = sessionStorage.getItem('amazonScanProgress');
-  if (progressData) {
-    const progress = JSON.parse(progressData);
-    visitedUrls = progress.visitedUrls || [];
-  }
-  
-  // Add current URL to visited list
-  const currentUrl = window.location.href;
-  if (!visitedUrls.includes(currentUrl)) {
-    visitedUrls.push(currentUrl);
-  }
-  
-  // Scan current page and add to totals
-  const pageResult = scanFirstPageOrders();
-  
-  // Check if this page has orders - if no orders found, we might be past the valid pages
-  if (pageResult.count === 0 && currentPage > 1) {
-    console.log(`⚠️ No orders found on page ${currentPage}, assuming end of valid pages`);
-    sessionStorage.removeItem('amazonScanProgress');
-    ui.update(manualTotal, manualCount, `Complete (${currentPage - 1} pages with orders)`, timePeriod);
-    console.log(`✅ Automatic scan complete: $${manualTotal} from ${manualCount} orders across ${currentPage - 1} valid pages`);
-    return;
-  }
-  
-  // Additional check: if we're on a page beyond what Amazon shows in the dropdown
-  // Look for the "X orders placed in" text to validate we're on a real page
-  if (!document.body.textContent.includes('orders placed in')) {
-    console.log(`⚠️ Page ${currentPage} doesn't appear to be a valid orders page`);
-    sessionStorage.removeItem('amazonScanProgress');
-    ui.update(manualTotal, manualCount, `Complete (${currentPage - 1} valid pages)`, timePeriod);
-    console.log(`✅ Automatic scan complete: $${manualTotal} from ${manualCount} orders across ${currentPage - 1} valid pages`);
-    return;
-  }
-  
-  manualTotal += pageResult.total;
-  manualCount += pageResult.count;
-  
-  console.log(`📄 Page ${currentPage}: $${pageResult.total} from ${pageResult.count} orders`);
-  ui.update(manualTotal, manualCount, `Page ${currentPage} complete (${manualCount} total)`, timePeriod);
-  
-  // Look for next page
-  const nextPageLink = findNextPageLink();
-  
-  // Additional validation: check if we've likely reached all orders
-  const pageUrl = new URL(window.location.href);
-  const currentStartIndex = parseInt(pageUrl.searchParams.get('startIndex') || '0');
-  
-  // If we have 43 orders and we're at startIndex 40, we've seen orders 41-43, so we're done
-  // Generally, if startIndex + 10 >= total orders shown on page, we're at or past the end
-  const pageText = document.body.textContent;
-  const totalOrdersMatch = pageText.match(/(\d+)\s+orders?\s+placed\s+in/);
-  if (totalOrdersMatch) {
-    const totalOrders = parseInt(totalOrdersMatch[1]);
-    if (currentStartIndex + 10 >= totalOrders) {
-      console.log(`📊 Reached end: startIndex ${currentStartIndex} + 10 >= ${totalOrders} total orders`);
-      sessionStorage.removeItem('amazonScanProgress');
-      ui.update(manualTotal, manualCount, `Complete (${currentPage} pages)`, timePeriod);
-      console.log(`✅ Automatic scan complete: $${manualTotal} from ${manualCount} orders across ${currentPage} pages`);
-      return;
-    }
-  }
-  
-  // Stop if no next page link, reached max pages, or if we've seen this URL before
-  if (!nextPageLink || currentPage >= 10 || visitedUrls.includes(nextPageLink)) {
-    let reason = 'no more pages';
-    if (currentPage >= 10) reason = 'max pages reached';
-    if (visitedUrls.includes(nextPageLink)) reason = 'duplicate URL detected';
-    
-    console.log(`Scan complete: ${reason}`);
-    sessionStorage.removeItem('amazonScanProgress');
-    ui.update(manualTotal, manualCount, `Complete (${currentPage} pages)`, timePeriod);
-    console.log(`✅ Automatic scan complete: $${manualTotal} from ${manualCount} orders across ${currentPage} pages`);
-    return;
-  }
-  
-  // Navigate to next page
-  currentPage++;
-  console.log(`🔄 Navigating to page ${currentPage}: ${nextPageLink}`);
-  ui.update(manualTotal, manualCount, `Navigating to page ${currentPage}...`, timePeriod);
-  
-  // Store progress and navigate (including visited URLs)
-  sessionStorage.setItem('amazonScanProgress', JSON.stringify({
-    manualTotal: manualTotal,
-    manualCount: manualCount,
-    currentPage: currentPage,
-    isAutoScanning: true,
-    visitedUrls: visitedUrls
-  }));
-  
-  // Small delay then navigate
-  setTimeout(() => {
-    window.location.href = nextPageLink;
-  }, 1500);
-}
-
-// Scan all pages using programmatic tab navigation
-async function scanAllPagesWithTabNavigation(ui, timePeriod) {
-  console.log('🚀 Starting programmatic tab navigation scan...');
-  
-  let totalAmount = 0;
-  let totalOrderCount = 0;
-  let currentPage = 1;
-  const maxPages = 10;
-  
-  // Scan the current page first
-  console.log(`📄 Scanning page ${currentPage} (current page)...`);
-  ui.update(totalAmount, totalOrderCount, `Scanning page ${currentPage}...`, timePeriod);
-  
-  const currentPageResult = scanFirstPageOrders();
-  totalAmount += currentPageResult.total;
-  totalOrderCount += currentPageResult.count;
-  
-  console.log(`📄 Page ${currentPage}: $${currentPageResult.total} from ${currentPageResult.count} orders`);
-  ui.update(totalAmount, totalOrderCount, `Page ${currentPage} complete`, timePeriod);
-  
-  // Get total orders from page to know when to stop
-  const pageText = document.body.textContent;
-  const totalOrdersMatch = pageText.match(/(\d+)\s+orders?\s+placed\s+in/);
-  const expectedTotalOrders = totalOrdersMatch ? parseInt(totalOrdersMatch[1]) : null;
-  
-  console.log(`📊 Expected total orders: ${expectedTotalOrders}`);
-  
-  // Store progress and start tab navigation
-  const scanData = {
-    totalAmount,
-    totalOrderCount, 
-    currentPage,
-    expectedTotalOrders,
-    timePeriod,
-    maxPages,
-    baseUrl: window.location.origin + window.location.pathname,
-    timeFilter: new URL(window.location.href).searchParams.get('timeFilter') || 'months-3'
-  };
-  
-  // Send message to background script to start tab navigation
-  try {
-    const response = await chrome.runtime.sendMessage({
-      type: 'START_TAB_SCAN',
-      data: scanData
-    });
-    
-    if (response && response.success) {
-      console.log('Tab navigation scan initiated successfully');
-      ui.update(totalAmount, totalOrderCount, 'Initiating tab navigation...', timePeriod);
-      
-      // Set up listener for scan updates
-      chrome.runtime.onMessage.addListener(handleScanUpdate);
-    } else {
-      throw new Error('Failed to initiate tab navigation scan');
-    }
-  } catch (error) {
-    console.error('Error initiating tab navigation:', error);
-    ui.update(totalAmount, totalOrderCount, 'Tab navigation not supported - use manual approach', timePeriod);
-  }
-  
-  function handleScanUpdate(message, sender, sendResponse) {
-    if (message.type === 'SCAN_UPDATE') {
-      const { totalAmount, totalOrderCount, status, currentPage } = message.data;
-      ui.update(totalAmount, totalOrderCount, status, timePeriod);
-      console.log(`📄 Tab scan update: Page ${currentPage}, $${totalAmount}, ${totalOrderCount} orders`);
-    } else if (message.type === 'SCAN_COMPLETE') {
-      const { totalAmount, totalOrderCount, totalPages } = message.data;
-      ui.update(totalAmount, totalOrderCount, `Complete (${totalPages} pages)`, timePeriod);
-      console.log(`✅ Tab navigation scan complete: $${totalAmount} from ${totalOrderCount} orders across ${totalPages} pages`);
-      
-      // Store final results
-      manualTotal = totalAmount;
-      manualCount = totalOrderCount;
-      
-      // Remove listener
-      chrome.runtime.onMessage.removeListener(handleScanUpdate);
-    }
-  }
-}
-
-// Scan all pages seamlessly using background fetch (no page navigation) - DEPRECATED
-async function scanAllPagesSeamlessly(ui, timePeriod) {
-  console.log('🚀 Starting seamless background scan...');
-  
-  let totalAmount = 0;
-  let totalOrderCount = 0;
-  let currentPage = 1;
-  const maxPages = 10;
-  const visitedUrls = [];
-  
-  // Scan the current page first
-  console.log(`📄 Scanning page ${currentPage} (current page)...`);
-  ui.update(totalAmount, totalOrderCount, `Scanning page ${currentPage}...`, timePeriod);
-  
-  const currentPageResult = scanFirstPageOrders();
-  totalAmount += currentPageResult.total;
-  totalOrderCount += currentPageResult.count;
-  visitedUrls.push(window.location.href);
-  
-  console.log(`📄 Page ${currentPage}: $${currentPageResult.total} from ${currentPageResult.count} orders`);
-  ui.update(totalAmount, totalOrderCount, `Page ${currentPage} complete`, timePeriod);
-  
-  // Get total orders from page to know when to stop
-  const pageText = document.body.textContent;
-  const totalOrdersMatch = pageText.match(/(\d+)\s+orders?\s+placed\s+in/);
-  const expectedTotalOrders = totalOrdersMatch ? parseInt(totalOrdersMatch[1]) : null;
-  
-  console.log(`📊 Expected total orders: ${expectedTotalOrders}`);
-  
-  // Fetch additional pages in background
-  let currentStartIndex = 0;
-  
-  while (currentPage < maxPages) {
-    // Calculate next page startIndex
-    currentStartIndex += 10;
-    
-    // If we know total orders and we've covered them all, stop
-    if (expectedTotalOrders && currentStartIndex >= expectedTotalOrders) {
-      console.log(`📊 All ${expectedTotalOrders} orders covered (startIndex ${currentStartIndex}), stopping`);
-      break;
-    }
-    
-    currentPage++;
-    
-    // Construct next page URL
-    const currentUrl = new URL(window.location.href);
-    currentUrl.searchParams.set('startIndex', currentStartIndex.toString());
-    
-    // Update the ref parameter to match Amazon's pagination pattern
-    const fromPage = currentPage - 1;  // Previous page number
-    const toPage = currentPage;        // Current page number
-    currentUrl.searchParams.set('ref_', `ppx_yo2ov_dt_b_pagination_${fromPage}_${toPage}`);
-    
-    const nextPageUrl = currentUrl.toString();
-    
-    if (visitedUrls.includes(nextPageUrl)) {
-      console.log('🔄 Duplicate URL detected, stopping');
-      break;
-    }
-    
-    console.log(`📄 Fetching page ${currentPage} in background: ${nextPageUrl}`);
-    ui.update(totalAmount, totalOrderCount, `Fetching page ${currentPage}...`, timePeriod);
-    
-    try {
-      // Fetch the page with enhanced headers to mimic a real browser request
-      const response = await fetch(nextPageUrl, {
-        method: 'GET',
-        headers: {
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache',
-          'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120"',
-          'Sec-Ch-Ua-Mobile': '?0',
-          'Sec-Ch-Ua-Platform': '"macOS"',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'same-origin',
-          'Sec-Fetch-User': '?1',
-          'Upgrade-Insecure-Requests': '1',
-          'User-Agent': navigator.userAgent,
-          'Referer': window.location.href
-        },
-        credentials: 'include',
-        mode: 'cors'
-      });
-      
-      if (!response.ok) {
-        console.error(`Failed to fetch page ${currentPage}: ${response.status}`);
-        break;
-      }
-      
-      const html = await response.text();
-      visitedUrls.push(nextPageUrl);
-      
-      // Debug: Log what we actually received
-      console.log(`📄 Page ${currentPage} HTML length: ${html.length}`);
-      console.log(`📄 Page ${currentPage} contains "Sign in": ${html.includes('Sign in')}`);
-      console.log(`📄 Page ${currentPage} contains "orders placed in": ${html.includes('orders placed in')}`);
-      console.log(`📄 Page ${currentPage} contains "Order placed": ${html.includes('Order placed')}`);
-      console.log(`📄 Page ${currentPage} first 500 chars:`, html.substring(0, 500));
-      
-      // Check if we got redirected to sign-in (more specific check)
-      if (html.includes('Sign in') && html.includes('email or mobile phone') && html.includes('Continue')) {
-        console.warn(`Page ${currentPage} redirected to sign-in - authentication issue`);
-        ui.update(totalAmount, totalOrderCount, `Auth issue on page ${currentPage} - partial results`, timePeriod);
-        break;
-      }
-      
-      // More flexible check for order content - look for various order indicators
-      const hasOrderContent = html.includes('orders placed in') || 
-                             html.includes('Order placed') || 
-                             html.includes('Your Orders') ||
-                             html.includes('a-box-group') ||
-                             html.includes('Order #') ||
-                             html.includes('Total') ||
-                             /\$\d+\.\d{2}/.test(html);
-      
-      if (!hasOrderContent) {
-        console.log(`Page ${currentPage} doesn't contain recognizable order content, stopping`);
-        console.log(`📄 Debugging: Page title in HTML: ${html.match(/<title>(.*?)<\/title>/)?.[1] || 'No title found'}`);
-        break;
-      } else {
-        console.log(`📄 Page ${currentPage} has order content, proceeding with scan`);
-      }
-      
-             // Parse the fetched page
-       const parser = new DOMParser();
-       const doc = parser.parseFromString(html, 'text/html');
-       
-       // Debug: Check what elements we can find in the parsed document
-       const boxGroups = doc.querySelectorAll('.a-box-group');
-       const orderElements = doc.querySelectorAll('[class*="order"]');
-       const dollarAmounts = html.match(/\$\d+\.\d{2}/g);
-       
-       console.log(`📄 Page ${currentPage} parsed elements:`);
-       console.log(`  - .a-box-group elements: ${boxGroups.length}`);
-       console.log(`  - [class*="order"] elements: ${orderElements.length}`);
-       console.log(`  - Dollar amounts found: ${dollarAmounts ? dollarAmounts.length : 0}`);
-       if (dollarAmounts) console.log(`  - Sample amounts: ${dollarAmounts.slice(0, 5).join(', ')}`);
-       
-              // Scan the fetched page
-       const pageResult = scanPageFromDocument(doc);
-       
-       // If no orders found with DOM parsing, try direct HTML pattern matching
-       if (pageResult.count === 0) {
-         console.log(`No orders found with DOM parsing, trying direct HTML pattern matching...`);
-         const htmlOrderResult = scanOrdersFromHTML(html);
-         
-         if (htmlOrderResult.count > 0) {
-           console.log(`Found ${htmlOrderResult.count} orders via HTML pattern matching`);
-           totalAmount += htmlOrderResult.total;
-           totalOrderCount += htmlOrderResult.count;
-           
-           console.log(`📄 Page ${currentPage}: $${htmlOrderResult.total} from ${htmlOrderResult.count} orders (HTML parsing)`);
-           ui.update(totalAmount, totalOrderCount, `Page ${currentPage} complete`, timePeriod);
-         } else {
-           console.log(`No orders found on page ${currentPage}, assuming end of valid pages`);
-           break;
-         }
-       }
-      
-      totalAmount += pageResult.total;
-      totalOrderCount += pageResult.count;
-      
-      console.log(`📄 Page ${currentPage}: $${pageResult.total} from ${pageResult.count} orders`);
-      ui.update(totalAmount, totalOrderCount, `Page ${currentPage} complete`, timePeriod);
-      
-      // Small delay to be respectful to the server
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-    } catch (error) {
-      console.error(`Error fetching page ${currentPage}:`, error);
-      ui.update(totalAmount, totalOrderCount, `Error on page ${currentPage} - partial results`, timePeriod);
-      break;
-    }
-  }
-  
-  console.log(`✅ Seamless scan complete: $${totalAmount.toFixed(2)} from ${totalOrderCount} orders across ${currentPage} pages`);
-  ui.update(totalAmount, totalOrderCount, `Complete (${currentPage} pages)`, timePeriod);
-  
-  // Store final results in manual mode variables
-  manualTotal = totalAmount;
-  manualCount = totalOrderCount;
-}
-
-// Scan all pages using automatic navigation (browser page changes) - DEPRECATED
-async function scanAllPagesWithNavigation(ui, timePeriod) {
-  console.log('🚀 Starting automatic navigation scan...');
-  
-  // Start with page 1
-  await continueAutoScan(ui, timePeriod, 1);
-}
-
-// Scan all pages of orders using fetch (no page refresh)
-async function scanAllPagesOrders(updateCallback) {
+// Scan all pages of orders
+async function scanAllPagesOrders() {
   console.log('🚀 Starting comprehensive scan of all pages...');
   
   let totalAmount = 0;
   let totalOrderCount = 0;
   let currentPage = 1;
   const maxPages = 20; // Safety limit to prevent infinite loops
-  const processedUrls = new Set();
+  const processedPages = new Set();
   
-  // Store the current page results first
-  const currentPageResult = scanFirstPageOrders();
-  totalAmount += currentPageResult.total;
-  totalOrderCount += currentPageResult.count;
-  processedUrls.add(window.location.href);
-  
-  console.log(`📄 Page ${currentPage}: $${currentPageResult.total} from ${currentPageResult.count} orders`);
-  
-  // Update UI with first page results
-  if (updateCallback) {
-    updateCallback(totalAmount, totalOrderCount, `Page ${currentPage} complete`);
-  }
-  
-  // Try to find and scan additional pages
-  let nextPageUrl = findNextPageLink();
-  
-  while (nextPageUrl && currentPage < maxPages && !processedUrls.has(nextPageUrl)) {
-    currentPage++;
+  while (currentPage <= maxPages) {
     console.log(`📄 Scanning page ${currentPage}...`);
     
-    // Update UI with scanning status
-    if (updateCallback) {
-      updateCallback(totalAmount, totalOrderCount, `Scanning page ${currentPage}...`);
-    }
+    // Scan current page
+    const pageResult = scanFirstPageOrders();
+    totalAmount += pageResult.total;
+    totalOrderCount += pageResult.count;
     
-    try {
-      // Fetch the next page content with proper headers
-      const response = await fetch(nextPageUrl, {
-        method: 'GET',
-        headers: {
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5',
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache',
-          'User-Agent': navigator.userAgent
-        },
-        credentials: 'include'
-      });
-      
-      if (!response.ok) {
-        console.error(`Failed to fetch page ${currentPage}: ${response.status}`);
-        break;
-      }
-      
-      const html = await response.text();
-      
-      // Debug: Check if we got actual order content
-      console.log(`Fetched page ${currentPage} HTML length:`, html.length);
-      console.log(`Contains "Order placed":`, html.includes('Order placed'));
-      console.log(`Contains "Total":`, html.includes('Total'));
-      console.log(`Contains "Jul":`, html.includes('Jul'));
-      
-      // Check if we got redirected to sign-in
-      if (html.includes('Sign in') && html.includes('email or mobile phone')) {
-        console.error(`Page ${currentPage} redirected to sign-in - authentication issue`);
-        break;
-      }
-      
-      // Create a temporary DOM to parse the content
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(html, 'text/html');
-      
-      // Scan the fetched page for orders
-      const pageResult = scanPageFromDocument(doc);
-      totalAmount += pageResult.total;
-      totalOrderCount += pageResult.count;
-      
-      console.log(`📄 Page ${currentPage}: $${pageResult.total} from ${pageResult.count} orders`);
-      
-      // Update UI with current progress
-      if (updateCallback) {
-        updateCallback(totalAmount, totalOrderCount, `Page ${currentPage} complete`);
-      }
-      
-      // Look for the next page in the fetched content
-      console.log('🔍 Looking for next page in fetched content...');
-      
-      const nextPageSelectors = [
-        'a[aria-label*="Next"]',
-        'a[title*="Next"]',
-        '.a-pagination .a-last a',
-        '.a-pagination-next',
-        'a[class*="next"]',
-        'a[class*="pagination"]',
-        'a[aria-label*="next"]',
-        'a[title*="next"]'
-      ];
-      
-      let foundNext = false;
-      for (const selector of nextPageSelectors) {
-        const link = doc.querySelector(selector);
-        if (link && link.href && !link.disabled) {
-          console.log(`Found next page link in fetched content: ${selector} -> ${link.href}`);
-          nextPageUrl = link.href;
-          foundNext = true;
-          break;
-        }
-      }
-      
-      if (!foundNext) {
-        // Look for pagination links with numbers and startIndex
-        const paginationLinks = doc.querySelectorAll('.a-pagination a, [class*="pagination"] a, a[href*="startIndex"]');
-        console.log(`Found ${paginationLinks.length} pagination links in fetched content`);
-        
-        let highestPageUrl = null;
-        let highestStartIndex = 0;
-        
-        for (const link of paginationLinks) {
-          const text = link.textContent.trim();
-          const href = link.href;
-          
-          console.log(`Checking fetched link: "${text}" -> ${href}`);
-          
-          // Check for startIndex parameter
-          const startIndexMatch = href.match(/startIndex=(\d+)/);
-          if (startIndexMatch) {
-            const startIndex = parseInt(startIndexMatch[1]);
-            if (startIndex > highestStartIndex && !processedUrls.has(href)) {
-              highestStartIndex = startIndex;
-              highestPageUrl = href;
-            }
-          }
-          
-          // Check for "Next" text
-          if (text.toLowerCase().includes('next') && href && !processedUrls.has(href)) {
-            console.log(`Found "Next" link in fetched content: ${href}`);
-            nextPageUrl = href;
-            foundNext = true;
-            break;
-          }
-        }
-        
-        if (!foundNext && highestPageUrl) {
-          console.log(`Using highest startIndex link from fetched content: ${highestPageUrl}`);
-          nextPageUrl = highestPageUrl;
-          foundNext = true;
-        }
-      }
-      
-      if (!foundNext) {
-        // Try to construct next page URL with incremented startIndex
-        const currentUrl = new URL(window.location.href);
-        const currentStartIndex = parseInt(currentUrl.searchParams.get('startIndex') || '0');
-        const nextStartIndex = currentStartIndex + 20; // Amazon typically shows 20 orders per page
-        
-        // Construct next page URL
-        const nextUrl = new URL(currentUrl);
-        nextUrl.searchParams.set('startIndex', nextStartIndex.toString());
-        const constructedNextUrl = nextUrl.toString();
-        
-        console.log(`Trying constructed next page URL: ${constructedNextUrl}`);
-        
-        // Test if this URL would return content
-        try {
-          const testResponse = await fetch(constructedNextUrl, {
-            method: 'HEAD',
-            headers: {
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-              'User-Agent': navigator.userAgent
-            },
-            credentials: 'include'
-          });
-          
-          if (testResponse.ok) {
-            nextPageUrl = constructedNextUrl;
-            foundNext = true;
-            console.log(`Constructed URL is valid: ${constructedNextUrl}`);
-          } else {
-            console.log(`Constructed URL returned ${testResponse.status}, stopping scan`);
-            break;
-          }
-        } catch (error) {
-          console.log(`Error testing constructed URL: ${error.message}`);
-          break;
-        }
-      }
-      
-      if (!foundNext) {
-        console.log('No next page found, scan complete');
-        break;
-      }
-      
-      processedUrls.add(nextPageUrl);
-      
-      // Add a small delay to prevent overwhelming the server
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-    } catch (error) {
-      console.error(`Error fetching page ${currentPage}:`, error);
+    // Check if we've already processed this page (avoid infinite loops)
+    const currentUrl = window.location.href;
+    if (processedPages.has(currentUrl)) {
+      console.log('Already processed this page, stopping...');
       break;
     }
-  }
-  
-  console.log(`✅ Scan complete: $${totalAmount.toFixed(2)} from ${totalOrderCount} orders across ${currentPage} pages`);
-  return { total: totalAmount, count: totalOrderCount, pages: currentPage };
-}
-
-// Scan orders from a document (used for fetched pages)
-function scanPageFromDocument(doc) {
-  console.log('🔍 Scanning fetched document for orders...');
-  
-  let totalAmount = 0;
-  let orderCount = 0;
-  const processedAmounts = new Set();
-  
-  // Look for order containers first
-  const orderSelectors = [
-    '.a-box-group',
-    '[class*="order"]',
-    '[class*="shipment"]',
-    '.a-card'
-  ];
-  
-  let orderElements = [];
-  for (const selector of orderSelectors) {
-    orderElements = doc.querySelectorAll(selector);
-    if (orderElements.length > 0) {
-      console.log(`Found ${orderElements.length} elements with selector: ${selector}`);
-      break;
-    }
-  }
-  
-  // If no specific order containers, look for elements containing "Order placed" or "Total"
-  if (orderElements.length === 0) {
-    const allElements = doc.querySelectorAll('*');
-    orderElements = Array.from(allElements).filter(el => {
-      const text = el.textContent;
-      return (text.includes('Order placed') || text.includes('Total')) &&
-             !text.includes('var ') &&
-             !text.includes('function') &&
-             !text.includes('window.') &&
-             !text.includes('Buy it again') &&
-             !text.includes('Customers also bought') &&
-             text.length < 1000;
-    });
-    console.log(`Found ${orderElements.length} potential order elements by content`);
-  }
-  
-  // Also try to find order elements by looking for specific Amazon order patterns
-  if (orderElements.length === 0) {
-    const orderPatterns = [
-      'div[data-testid*="order"]',
-      'div[class*="order-item"]',
-      'div[class*="order-card"]',
-      'div[class*="shipment"]'
-    ];
+    processedPages.add(currentUrl);
     
-    for (const pattern of orderPatterns) {
-      orderElements = doc.querySelectorAll(pattern);
-      if (orderElements.length > 0) {
-        console.log(`Found ${orderElements.length} elements with pattern: ${pattern}`);
-        break;
-      }
-    }
-  }
-  
-  console.log(`Processing ${orderElements.length} order elements...`);
-  
-  // Debug: Show what we're processing
-  if (orderElements.length > 0) {
-    console.log(`Sample element from fetched page:`, orderElements[0].textContent.substring(0, 300));
-  }
-  
-  orderElements.forEach((element, index) => {
-    const text = element.textContent;
-    const html = element.innerHTML;
-    
-    // Skip JavaScript elements
-    if (text.includes('window.uet') || text.includes('performance.mark') || 
-        text.includes('function(') || text.includes('try {') || 
-        text.includes('var ') || text.includes('const ') || text.includes('let ') ||
-        text.length < 50) {
-      console.log(`Skipped JavaScript/short element in fetched page: ${text.substring(0, 100)}`);
-      return;
-    }
-    
-    // Look for dollar amounts in both text content and HTML
-    let moneyMatches = text.match(/\$(\d+(?:\.\d{2})?)/g);
-    if (!moneyMatches) {
-      // Also search in HTML for encoded dollar amounts
-      moneyMatches = html.match(/\$(\d+(?:\.\d{2})?)/g) || html.match(/&#36;(\d+(?:\.\d{2})?)/g);
-    }
-    
-    if (moneyMatches && moneyMatches.length > 0) {
-      const amounts = moneyMatches.map(match => parseFloat(match.replace(/[\$&#36;]/g, '')));
-      const maxAmount = Math.max(...amounts);
-      
-      if (maxAmount >= 0.01 && !processedAmounts.has(maxAmount)) {
-        // More flexible order detection for fetched content
-        const hasOrderText = text.includes('Order placed') || text.includes('Total') || text.includes('Order #') ||
-                            html.includes('Order placed') || html.includes('Total') || html.includes('Order #');
-        const hasMonth = /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b/i.test(text) ||
-                        /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b/i.test(html);
+    // Look for next page
+    const nextPageLink = findNextPageLink();
+    if (!nextPageLink) {
+      console.log('No next page found, scan complete');
+          break;
+        }
         
-        if (hasOrderText && hasMonth) {
-          console.log(`Found order amount: $${maxAmount} in fetched element:`, text.substring(0, 150));
-          totalAmount += maxAmount;
-          orderCount++;
-          processedAmounts.add(maxAmount);
+    // Navigate to next page
+    console.log(`➡️ Navigating to next page: ${nextPageLink}`);
+    window.location.href = nextPageLink;
+    
+    // Wait for page to load
+    await new Promise(resolve => {
+      const checkLoaded = () => {
+        if (document.readyState === 'complete') {
+          setTimeout(resolve, 2000); // Wait for content to load
         } else {
-          console.log(`Skipped potential order (validation failed): $${maxAmount} - hasOrderText: ${hasOrderText}, hasMonth: ${hasMonth}`);
+          setTimeout(checkLoaded, 100);
         }
-      }
-    }
-  });
+      };
+      checkLoaded();
+    });
+    
+    currentPage++;
+  }
   
-  console.log(`📊 Fetched page results: $${totalAmount.toFixed(2)} from ${orderCount} orders`);
-  return { total: totalAmount, count: orderCount };
+  console.log(`✅ Scan complete: $${totalAmount.toFixed(2)} from ${totalOrderCount} orders across ${currentPage - 1} pages`);
+  return { total: totalAmount, count: totalOrderCount, pages: currentPage - 1 };
 }
 
 function injectPanel() {
@@ -1084,6 +502,8 @@ function injectPanel() {
         ">All Pages</button>
       </div>
       
+      
+      
       <div style="display: flex; gap: 8px; margin-bottom: 16px;">
         <button id="clear-button" style="
           flex: 1;
@@ -1100,9 +520,7 @@ function injectPanel() {
       </div>
       
       <div style="font-size: 11px; color: #666; line-height: 1.4; text-align: center;">
-        💡 "This Page" scans current page and adds to total<br>
-        "All Pages" opens tabs to scan each page automatically<br>
-        <span style="color: #007185;">🚀 "All Pages" uses real browser tabs for accuracy!</span>
+        💡 Analyzes orders on the current page
       </div>
     </div>
   `;
@@ -1216,6 +634,8 @@ function injectPanel() {
     panel.remove();
   });
   
+  
+  
   return {
     update: (total, count, status, period) => {
       totalAmountEl.textContent = total.toFixed(2);
@@ -1240,106 +660,86 @@ function injectPanel() {
   };
 }
 
-// Global variables for manual page accumulation
-let manualTotal = 0;
-let manualCount = 0;
-let isManualMode = false;
-
 // Main execution
 function main() {
   // Check if panel already exists
   const existingPanel = document.getElementById('amazon-spend-dashboard');
   if (existingPanel) {
     console.log('Panel already exists, updating...');
-    return;
-  }
-
+        return;
+      }
+      
   const ui = injectPanel();
 
-  // Get the selected time period
-  const timePeriod = getSelectedTimePeriod();
-  console.log('Detected time period:', timePeriod);
-
-  // Check if we're in the middle of an auto-scan
-  const scanProgress = sessionStorage.getItem('amazonScanProgress');
-  if (scanProgress) {
-    const progress = JSON.parse(scanProgress);
-    if (progress.isAutoScanning) {
-      console.log('🔄 Resuming automatic scan...', progress);
-      manualTotal = progress.manualTotal || 0;
-      manualCount = progress.manualCount || 0;
-      isManualMode = true;
-      
-      // Continue the scan on this new page
-      setTimeout(() => {
-        continueAutoScan(ui, timePeriod, progress.currentPage);
-      }, 1000); // Give page time to load
-      
-      ui.update(manualTotal, manualCount, `Resuming scan on page ${progress.currentPage}...`, timePeriod);
-      return; // Don't set up normal UI yet
-    }
-  }
-
   // Initialize with ready state
-  ui.update(0, 0, "Ready", timePeriod);
+  ui.update(0, 0, "Ready");
 
-  function runScanPage() {
-    console.log('🚀 Starting page calculation...');
-    ui.update(manualTotal, manualCount, "Calculating this page...", timePeriod);
+  function runScan() {
+    console.log('🚀 Starting calculation...');
+    ui.update(0, 0, "Calculating...");
     
     try {
       const result = scanFirstPageOrders();
-      
-      if (isManualMode) {
-        // Add to running total
-        manualTotal += result.total;
-        manualCount += result.count;
-        ui.update(manualTotal, manualCount, `Added page (${manualCount} total orders)`, timePeriod);
-        console.log(`✅ Page added: +$${result.total} (+${result.count} orders) = Total: $${manualTotal} (${manualCount} orders)`);
-      } else {
-        // First page or reset - start manual mode
-        manualTotal = result.total;
-        manualCount = result.count;
-        isManualMode = true;
-        ui.update(manualTotal, manualCount, "Page complete - Navigate to next page manually", timePeriod);
-        console.log(`✅ Page calculation complete: $${result.total} from ${result.count} orders. Navigate manually for more pages.`);
-      }
+      ui.update(result.total, result.count, "Calculation complete");
+      console.log(`✅ Calculation complete: $${result.total} from ${result.count} orders`);
     } catch (e) {
       console.error('Calculation error:', e);
-      ui.update(manualTotal, manualCount, `Error: ${String(e)}`, timePeriod);
-    }
-  }
-
-  async function runScanAll() {
-    console.log('🚀 Starting comprehensive calculation with programmatic navigation...');
-    ui.update(0, 0, "Starting programmatic scan...", timePeriod);
-    
-    try {
-      // Clear any existing scan progress and reset
-      sessionStorage.removeItem('amazonScanProgress');
-      manualTotal = 0;
-      manualCount = 0;
-      isManualMode = true;
-      
-      // Start the programmatic tab navigation process
-      await scanAllPagesWithTabNavigation(ui, timePeriod);
-      
-    } catch (e) {
-      console.error('Comprehensive scan error:', e);
-      ui.update(manualTotal, manualCount, `Error: ${String(e)}`, timePeriod);
+      ui.update(0, 0, `Error: ${String(e)}`);
     }
   }
 
   function clearResults() {
-    manualTotal = 0;
-    manualCount = 0;
-    isManualMode = false;
-    ui.update(0, 0, "Ready to calculate", timePeriod);
+    ui.update(0, 0, "Ready to calculate");
     console.log('🧹 Results cleared');
   }
 
-  ui.onScanPage(runScanPage);
-  ui.onScanAll(runScanAll);
+  // Handle "All Pages" scanning using background script
+  function runAllPagesScan() {
+    console.log('🚀 Starting all pages scan...');
+    ui.update(0, 0, "Starting multi-page scan...");
+    
+    // Get current page data
+    const currentResult = scanFirstPageOrders();
+    const timePeriod = getSelectedTimePeriod();
+    const baseUrl = window.location.origin + window.location.pathname;
+    const timeFilter = new URLSearchParams(window.location.search).get('timeFilter') || 'all';
+    
+    // Send message to background script to start multi-page scan
+    if (typeof chrome !== 'undefined' && chrome.runtime) {
+      chrome.runtime.sendMessage({
+        type: 'START_TAB_SCAN',
+        data: {
+          totalAmount: currentResult.total,
+          totalOrderCount: currentResult.count,
+          currentPage: 1,
+          expectedTotalOrders: null,
+          maxPages: 20,
+          baseUrl: baseUrl,
+          timeFilter: timeFilter
+        }
+      });
+    } else {
+      console.error('Chrome runtime not available');
+      ui.update(0, 0, "Error: Extension not available");
+    }
+  }
+
+  // Listen for messages from background script
+  if (typeof chrome !== 'undefined' && chrome.runtime) {
+    chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+      if (msg.type === 'SCAN_UPDATE') {
+        const currentTimePeriod = getSelectedTimePeriod();
+        ui.update(msg.data.totalAmount, msg.data.totalOrderCount, msg.data.status, currentTimePeriod);
+      } else if (msg.type === 'SCAN_COMPLETE') {
+        const currentTimePeriod = getSelectedTimePeriod();
+        ui.update(msg.data.totalAmount, msg.data.totalOrderCount, "Scan complete!", currentTimePeriod);
+        console.log(`✅ All pages scan complete: $${msg.data.totalAmount} from ${msg.data.totalOrderCount} orders across ${msg.data.totalPages} pages`);
+      }
+    });
+  }
+
+  ui.onScanPage(runScan);
+  ui.onScanAll(runAllPagesScan);
   ui.onClear(clearResults);
 }
 

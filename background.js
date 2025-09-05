@@ -5,16 +5,34 @@ chrome.runtime.onInstalled.addListener(() => {
 
 // Handle tab navigation scanning
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg?.type === "PING") {
-    sendResponse({ ok: true, ts: Date.now() });
-    return;
-  }
-  
-  if (msg?.type === "START_TAB_SCAN") {
-    console.log('Starting tab navigation scan:', msg.data);
-    startTabNavigationScan(msg.data, sender.tab.id);
-    sendResponse({ success: true });
-    return;
+  try {
+    if (msg?.type === "PING") {
+      sendResponse({ ok: true, ts: Date.now() });
+      return;
+    }
+    
+    if (msg?.type === "START_TAB_SCAN") {
+      console.log('Starting tab navigation scan:', msg.data);
+      startTabNavigationScan(msg.data, sender.tab.id).catch(error => {
+        console.error('Error in tab navigation scan:', error);
+        chrome.tabs.sendMessage(sender.tab.id, {
+          type: 'SCAN_UPDATE',
+          data: {
+            totalAmount: msg.data.totalAmount || 0,
+            totalOrderCount: msg.data.totalOrderCount || 0,
+            status: `Error: ${error.message}`,
+            currentPage: 1
+          }
+        }).catch(() => {
+          // Ignore errors if tab is closed
+        });
+      });
+      sendResponse({ success: true });
+      return;
+    }
+  } catch (error) {
+    console.error('Error in message handler:', error);
+    sendResponse({ success: false, error: error.message });
   }
 });
 
@@ -49,15 +67,19 @@ async function startTabNavigationScan(scanData, originalTabId) {
       console.log(`Navigating to page ${pageNum}: ${pageUrl}`);
       
       // Send update to original tab
-      chrome.tabs.sendMessage(originalTabId, {
-        type: 'SCAN_UPDATE',
-        data: {
-          totalAmount,
-          totalOrderCount,
-          status: `Navigating to page ${pageNum}...`,
-          currentPage: pageNum
-        }
-      });
+      try {
+        await chrome.tabs.sendMessage(originalTabId, {
+          type: 'SCAN_UPDATE',
+          data: {
+            totalAmount,
+            totalOrderCount,
+            status: `Navigating to page ${pageNum}...`,
+            currentPage: pageNum
+          }
+        });
+      } catch (error) {
+        console.log('Could not send update to original tab (may be closed)');
+      }
       
       try {
         // Create a new tab for this page
@@ -83,15 +105,19 @@ async function startTabNavigationScan(scanData, originalTabId) {
           console.log(`Page ${pageNum}: $${pageResult.total} from ${pageResult.count} orders`);
           
           // Send update to original tab
-          chrome.tabs.sendMessage(originalTabId, {
-            type: 'SCAN_UPDATE',
-            data: {
-              totalAmount,
-              totalOrderCount,
-              status: `Page ${pageNum} complete`,
-              currentPage: pageNum
-            }
-          });
+          try {
+            await chrome.tabs.sendMessage(originalTabId, {
+              type: 'SCAN_UPDATE',
+              data: {
+                totalAmount,
+                totalOrderCount,
+                status: `Page ${pageNum} complete`,
+                currentPage: pageNum
+              }
+            });
+          } catch (error) {
+            console.log('Could not send update to original tab (may be closed)');
+          }
           
           // If no orders found, we've reached the end
           if (pageResult.count === 0) {
@@ -114,26 +140,34 @@ async function startTabNavigationScan(scanData, originalTabId) {
     }
     
     // Send completion message
-    chrome.tabs.sendMessage(originalTabId, {
-      type: 'SCAN_COMPLETE',
-      data: {
-        totalAmount,
-        totalOrderCount,
-        totalPages: pageNum
-      }
-    });
+    try {
+      await chrome.tabs.sendMessage(originalTabId, {
+        type: 'SCAN_COMPLETE',
+        data: {
+          totalAmount,
+          totalOrderCount,
+          totalPages: pageNum
+        }
+      });
+    } catch (error) {
+      console.log('Could not send completion message to original tab (may be closed)');
+    }
     
   } catch (error) {
     console.error('Tab navigation scan error:', error);
-    chrome.tabs.sendMessage(originalTabId, {
-      type: 'SCAN_UPDATE',
-      data: {
-        totalAmount,
-        totalOrderCount,
-        status: `Error: ${error.message}`,
-        currentPage: pageNum
-      }
-    });
+    try {
+      await chrome.tabs.sendMessage(originalTabId, {
+        type: 'SCAN_UPDATE',
+        data: {
+          totalAmount,
+          totalOrderCount,
+          status: `Error: ${error.message}`,
+          currentPage: pageNum
+        }
+      });
+    } catch (sendError) {
+      console.log('Could not send error message to original tab (may be closed)');
+    }
   }
 }
 
