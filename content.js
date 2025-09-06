@@ -440,7 +440,7 @@ function injectPanel() {
       user-select: none;
     ">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-        <h3 style="margin: 0; color: #007185; font-size: 18px; font-weight: 600;">💰 Order Calculator</h3>
+        <h3 style="margin: 0; color: #007185; font-size: 18px; font-weight: 600;">💰 Order Insights</h3>
         <div style="display: flex; gap: 8px;">
           <button id="position-btn" style="
             background: #f0f0f0;
