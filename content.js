@@ -424,8 +424,9 @@ function injectPanel() {
   panel.innerHTML = `
     <div id="dashboard-panel" style="
       position: fixed;
-      top: 20px;
-      right: 20px;
+      top: 50%;
+      left: 20px;
+      transform: translateY(-50%);
       width: 320px;
       background: white;
       border: 2px solid #007185;
@@ -589,10 +590,10 @@ function injectPanel() {
   // Position button - cycle through corners
   let positionIndex = 0;
   const positions = [
-    { top: '20px', right: '20px', left: 'auto', bottom: 'auto' },
-    { top: '20px', left: '20px', right: 'auto', bottom: 'auto' },
-    { bottom: '20px', right: '20px', top: 'auto', left: 'auto' },
-    { bottom: '20px', left: '20px', top: 'auto', right: 'auto' }
+    { top: '50%', left: '20px', right: 'auto', bottom: 'auto', transform: 'translateY(-50%)' },
+    { top: '50%', right: '20px', left: 'auto', bottom: 'auto', transform: 'translateY(-50%)' },
+    { bottom: '20px', left: '20px', top: 'auto', right: 'auto', transform: 'none' },
+    { bottom: '20px', right: '20px', top: 'auto', left: 'auto', transform: 'none' }
   ];
   
   positionBtn.addEventListener('click', () => {
@@ -602,7 +603,7 @@ function injectPanel() {
     panelElement.style.right = pos.right;
     panelElement.style.left = pos.left;
     panelElement.style.bottom = pos.bottom;
-    panelElement.style.transform = 'translate(0, 0)';
+    panelElement.style.transform = pos.transform === 'none' ? 'translate(0, 0)' : pos.transform;
     xOffset = 0;
     yOffset = 0;
   });
