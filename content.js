@@ -6,6 +6,7 @@ function scanFirstPageOrders() {
   let totalAmount = 0;
   let orderCount = 0;
   const processedAmounts = new Set(); // Track unique amounts to avoid duplicates
+  const monthlyData = {}; // Track spending by month
   const debugInfo = {
     totalElements: 0,
     elementsWithMoney: 0,
@@ -145,8 +146,9 @@ function scanFirstPageOrders() {
             console.log(`🔄 Duplicate amount detected: $${orderTotal} - skipping`);
           }
           
-          // Check for month names (expanded list)
-          const hasMonth = /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b/i.test(text);
+          // Check for month names (expanded list) and extract date info
+          const monthMatch = text.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2}),?\s+(20\d{2})\b/i);
+          const hasMonth = monthMatch !== null;
           if (hasMonth) {
             debugInfo.elementsWithMonth++;
           }
@@ -155,6 +157,22 @@ function scanFirstPageOrders() {
           if (hasOrderText && hasMonth) {
             debugInfo.elementsPassedAllChecks++;
             console.log(`✅ Found order total: $${orderTotal} in element:`, text.substring(0, 150));
+            
+            // Extract month and year for monthly tracking
+            if (monthMatch) {
+              const monthName = monthMatch[1];
+              const year = monthMatch[3];
+              const monthKey = `${monthName} ${year}`;
+              
+              if (!monthlyData[monthKey]) {
+                monthlyData[monthKey] = { total: 0, count: 0 };
+              }
+              monthlyData[monthKey].total += orderTotal;
+              monthlyData[monthKey].count += 1;
+              
+              console.log(`📅 Added $${orderTotal} to ${monthKey}`);
+            }
+            
             totalAmount += orderTotal;
             orderCount++;
             processedAmounts.add(orderTotal);
@@ -199,8 +217,9 @@ function scanFirstPageOrders() {
             debugInfo.elementsWithOrderText++;
           }
           
-          // Check for month names (expanded list)
-          const hasMonth = /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b/i.test(text);
+          // Check for month names (expanded list) and extract date info
+          const monthMatch = text.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2}),?\s+(20\d{2})\b/i);
+          const hasMonth = monthMatch !== null;
           if (hasMonth) {
             debugInfo.elementsWithMonth++;
           }
@@ -209,6 +228,22 @@ function scanFirstPageOrders() {
           if (hasOrderText && hasMonth) {
             debugInfo.elementsPassedAllChecks++;
             console.log(`✅ Found order amount (fallback): $${maxAmount} in element:`, text.substring(0, 150));
+            
+            // Extract month and year for monthly tracking
+            if (monthMatch) {
+              const monthName = monthMatch[1];
+              const year = monthMatch[3];
+              const monthKey = `${monthName} ${year}`;
+              
+              if (!monthlyData[monthKey]) {
+                monthlyData[monthKey] = { total: 0, count: 0 };
+              }
+              monthlyData[monthKey].total += maxAmount;
+              monthlyData[monthKey].count += 1;
+              
+              console.log(`📅 Added $${maxAmount} to ${monthKey} (fallback)`);
+            }
+            
             totalAmount += maxAmount;
             orderCount++;
             processedAmounts.add(maxAmount);
@@ -276,7 +311,8 @@ function scanFirstPageOrders() {
   console.log(`  Total elements without money: ${elementsWithoutMoney}`);
   
   console.log(`📊 First page results: $${totalAmount.toFixed(2)} from ${orderCount} orders`);
-  return { total: totalAmount, count: orderCount };
+  console.log(`📅 Monthly breakdown:`, monthlyData);
+  return { total: totalAmount, count: orderCount, monthlyData: monthlyData };
 }
 
 // Get the selected time period from the dropdown
@@ -361,6 +397,7 @@ async function scanAllPagesOrders() {
   let currentPage = 1;
   const maxPages = 20; // Safety limit to prevent infinite loops
   const processedPages = new Set();
+  const allMonthlyData = {}; // Collect monthly data from all pages
   
   while (currentPage <= maxPages) {
     console.log(`📄 Scanning page ${currentPage}...`);
@@ -369,6 +406,17 @@ async function scanAllPagesOrders() {
     const pageResult = scanFirstPageOrders();
     totalAmount += pageResult.total;
     totalOrderCount += pageResult.count;
+    
+    // Merge monthly data from this page
+    if (pageResult.monthlyData) {
+      for (const [month, data] of Object.entries(pageResult.monthlyData)) {
+        if (!allMonthlyData[month]) {
+          allMonthlyData[month] = { total: 0, count: 0 };
+        }
+        allMonthlyData[month].total += data.total;
+        allMonthlyData[month].count += data.count;
+      }
+    }
     
     // Check if we've already processed this page (avoid infinite loops)
     const currentUrl = window.location.href;
@@ -405,7 +453,8 @@ async function scanAllPagesOrders() {
   }
   
   console.log(`✅ Scan complete: $${totalAmount.toFixed(2)} from ${totalOrderCount} orders across ${currentPage - 1} pages`);
-  return { total: totalAmount, count: totalOrderCount, pages: currentPage - 1 };
+  console.log(`📅 All pages monthly data:`, allMonthlyData);
+  return { total: totalAmount, count: totalOrderCount, pages: currentPage - 1, monthlyData: allMonthlyData };
 }
 
 function injectPanel() {
@@ -476,6 +525,28 @@ function injectPanel() {
         </div>
       </div>
       
+      <!-- Chart Section -->
+      <div id="chart-section" style="margin-bottom: 16px; display: none;">
+        <div style="display: flex; justify-content: center; margin-bottom: 8px;">
+          <button id="toggle-view" style="
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 4px 8px;
+            cursor: pointer;
+            font-size: 11px;
+            color: #495057;
+          ">📊 Chart View</button>
+        </div>
+
+        <canvas id="monthly-chart" width="280" height="200" style="
+          border: 1px solid #eee;
+          border-radius: 6px;
+          background: white;
+          display: none;
+        "></canvas>
+      </div>
+      
       <div style="display: flex; gap: 8px; margin-bottom: 12px;">
         <button id="scan-page-button" style="
           flex: 1;
@@ -521,7 +592,8 @@ function injectPanel() {
       </div>
       
       <div style="font-size: 11px; color: #666; line-height: 1.4; text-align: center;">
-        💡 Analyzes orders on the current page
+        💡 Analyzes orders on the current page<br/>
+        📊 Both options now support monthly charts
       </div>
     </div>
   `;
@@ -529,7 +601,7 @@ function injectPanel() {
   // Add to page
   document.body.appendChild(panel);
   
-  // Get references to elements
+  // Get references to elements with null checks
   const totalAmountEl = document.getElementById('total-amount');
   const orderCountEl = document.getElementById('order-count');
   const statusTextEl = document.getElementById('status-text');
@@ -540,6 +612,15 @@ function injectPanel() {
   const closeButton = document.getElementById('close-panel');
   const positionBtn = document.getElementById('position-btn');
   const panelElement = document.getElementById('dashboard-panel');
+  const chartSection = document.getElementById('chart-section');
+  const toggleViewBtn = document.getElementById('toggle-view');
+  const monthlyChart = document.getElementById('monthly-chart');
+  
+  // Verify critical elements exist
+  if (!panelElement) {
+    console.error('Dashboard panel element not found');
+    return null;
+  }
   
   // Make panel draggable
   let isDragging = false;
@@ -596,67 +677,192 @@ function injectPanel() {
     { bottom: '20px', right: '20px', top: 'auto', left: 'auto', transform: 'none' }
   ];
   
-  positionBtn.addEventListener('click', () => {
-    positionIndex = (positionIndex + 1) % positions.length;
-    const pos = positions[positionIndex];
-    panelElement.style.top = pos.top;
-    panelElement.style.right = pos.right;
-    panelElement.style.left = pos.left;
-    panelElement.style.bottom = pos.bottom;
-    panelElement.style.transform = pos.transform === 'none' ? 'translate(0, 0)' : pos.transform;
-    xOffset = 0;
-    yOffset = 0;
-  });
+  if (positionBtn && panelElement) {
+    positionBtn.addEventListener('click', () => {
+      positionIndex = (positionIndex + 1) % positions.length;
+      const pos = positions[positionIndex];
+      panelElement.style.top = pos.top;
+      panelElement.style.right = pos.right;
+      panelElement.style.left = pos.left;
+      panelElement.style.bottom = pos.bottom;
+      panelElement.style.transform = pos.transform === 'none' ? 'translate(0, 0)' : pos.transform;
+      xOffset = 0;
+      yOffset = 0;
+    });
+  }
   
-  // Button hover effects
-  scanPageButton.addEventListener('mouseenter', () => {
-    scanPageButton.style.backgroundColor = '#e68900';
-  });
-  scanPageButton.addEventListener('mouseleave', () => {
-    scanPageButton.style.backgroundColor = '#FF9900';
-  });
+  // Button hover effects (with null checks)
+  if (scanPageButton) {
+    scanPageButton.addEventListener('mouseenter', () => {
+      scanPageButton.style.backgroundColor = '#e68900';
+    });
+    scanPageButton.addEventListener('mouseleave', () => {
+      scanPageButton.style.backgroundColor = '#FF9900';
+    });
+  }
   
-  scanAllButton.addEventListener('mouseenter', () => {
-    scanAllButton.style.backgroundColor = '#005f73';
-  });
-  scanAllButton.addEventListener('mouseleave', () => {
-    scanAllButton.style.backgroundColor = '#007185';
-  });
+  if (scanAllButton) {
+    scanAllButton.addEventListener('mouseenter', () => {
+      scanAllButton.style.backgroundColor = '#005f73';
+    });
+    scanAllButton.addEventListener('mouseleave', () => {
+      scanAllButton.style.backgroundColor = '#007185';
+    });
+  }
   
-  clearButton.addEventListener('mouseenter', () => {
-    clearButton.style.backgroundColor = '#5a6268';
-  });
-  clearButton.addEventListener('mouseleave', () => {
-    clearButton.style.backgroundColor = '#6c757d';
-  });
+  if (clearButton) {
+    clearButton.addEventListener('mouseenter', () => {
+      clearButton.style.backgroundColor = '#5a6268';
+    });
+    clearButton.addEventListener('mouseleave', () => {
+      clearButton.style.backgroundColor = '#6c757d';
+    });
+  }
   
-  // Close button handler
-  closeButton.addEventListener('click', () => {
-    panel.remove();
-  });
+  // Close button handler (with null check)
+  if (closeButton) {
+    closeButton.addEventListener('click', () => {
+      panel.remove();
+    });
+  }
+  
+  // Chart functionality
+  let chartVisible = false;
+  let currentMonthlyData = {};
+  
+  function drawMonthlyChart(monthlyData) {
+    if (!monthlyData || Object.keys(monthlyData).length === 0) {
+      return;
+    }
+    
+    const ctx = monthlyChart.getContext('2d');
+    const width = monthlyChart.width;
+    const height = monthlyChart.height;
+    
+    // Clear canvas
+    ctx.clearRect(0, 0, width, height);
+    
+    // Sort months chronologically
+    const sortedEntries = Object.entries(monthlyData).sort((a, b) => {
+      const dateA = new Date(a[0]);
+      const dateB = new Date(b[0]);
+      return dateA - dateB;
+    });
+    
+    if (sortedEntries.length === 0) return;
+    
+    // Calculate chart dimensions
+    const leftPadding = 50; // Space for month labels
+    const rightPadding = 70; // Space for values
+    const topPadding = 20;
+    const bottomPadding = 20;
+    const chartWidth = width - leftPadding - rightPadding;
+    const chartHeight = height - topPadding - bottomPadding;
+    
+    // Find max value for scaling (horizontal bars)
+    const maxValue = Math.max(...sortedEntries.map(([_, data]) => data.total));
+    const scale = chartWidth / maxValue;
+    
+    // Draw bars (horizontal layout)
+    const barSpacing = 4; // Spacing between bars
+    const totalSpacing = barSpacing * (sortedEntries.length - 1);
+    const barHeight = (chartHeight - totalSpacing) / sortedEntries.length;
+    
+    ctx.fillStyle = '#007185';
+    ctx.font = '10px Arial';
+    
+    sortedEntries.forEach(([month, data], index) => {
+      const y = topPadding + index * (barHeight + barSpacing);
+      const barLength = data.total * scale;
+      const x = leftPadding;
+      
+      // Draw bar (horizontal)
+      ctx.fillStyle = '#007185';
+      ctx.fillRect(x, y, barLength, barHeight);
+      
+      // Draw month label on the left
+      ctx.fillStyle = '#333';
+      ctx.textAlign = 'right';
+      ctx.font = '11px Arial';
+      const monthLabel = month.split(' ')[0].substring(0, 3);
+      ctx.fillText(monthLabel, leftPadding - 5, y + barHeight / 2 + 4);
+      
+      // Draw value at the end of bar
+      ctx.textAlign = 'left';
+      ctx.font = '10px Arial';
+      ctx.fillText(`$${data.total.toFixed(0)}`, x + barLength + 5, y + barHeight / 2 + 4);
+    });
+    
+    // Draw axes
+    ctx.strokeStyle = '#ddd';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    // Y-axis (left side)
+    ctx.moveTo(leftPadding, topPadding);
+    ctx.lineTo(leftPadding, height - bottomPadding);
+    // X-axis (bottom)
+    ctx.moveTo(leftPadding, height - bottomPadding);
+    ctx.lineTo(width - rightPadding, height - bottomPadding);
+    ctx.stroke();
+  }
+  
+  // Toggle view button handler (with null check)
+  if (toggleViewBtn) {
+    toggleViewBtn.addEventListener('click', () => {
+      chartVisible = !chartVisible;
+      if (chartVisible) {
+        if (monthlyChart) monthlyChart.style.display = 'block';
+        toggleViewBtn.textContent = '📈 Summary View';
+        drawMonthlyChart(currentMonthlyData);
+      } else {
+        if (monthlyChart) monthlyChart.style.display = 'none';
+        toggleViewBtn.textContent = '📊 Chart View';
+      }
+    });
+  }
   
   
   
   return {
-    update: (total, count, status, period) => {
-      totalAmountEl.textContent = total.toFixed(2);
-      orderCountEl.textContent = count;
-      if (status) {
+    update: (total, count, status, period, monthlyData) => {
+      if (totalAmountEl) totalAmountEl.textContent = total.toFixed(2);
+      if (orderCountEl) orderCountEl.textContent = count;
+      if (status && statusTextEl) {
         statusTextEl.textContent = status;
       }
-      if (period) {
+      if (period && periodTextEl) {
         periodTextEl.textContent = period;
+      }
+      if (monthlyData) {
+        currentMonthlyData = monthlyData;
+        // Show toggle button only if we have monthly data
+        if (toggleViewBtn) {
+          if (Object.keys(monthlyData).length > 0) {
+            console.log(`📊 Showing chart toggle button with ${Object.keys(monthlyData).length} months of data:`, monthlyData);
+            // Show the chart section container
+            if (chartSection) chartSection.style.display = 'block';
+          } else {
+            console.log(`📊 Hiding chart toggle button - no monthly data`);
+            if (chartSection) {
+              chartSection.style.display = 'none';
+              chartVisible = false;
+              if (monthlyChart) monthlyChart.style.display = 'none';
+            }
+          }
+        } else {
+          console.log(`📊 Toggle button element not found`);
+        }
       }
       console.log(`Update: $${total} (${count} orders) - ${status} - ${period || 'N/A'}`);
     },
     onScanPage: (callback) => {
-      scanPageButton.addEventListener('click', callback);
+      if (scanPageButton) scanPageButton.addEventListener('click', callback);
     },
     onScanAll: (callback) => {
-      scanAllButton.addEventListener('click', callback);
+      if (scanAllButton) scanAllButton.addEventListener('click', callback);
     },
     onClear: (callback) => {
-      clearButton.addEventListener('click', callback);
+      if (clearButton) clearButton.addEventListener('click', callback);
     }
   };
 }
@@ -675,13 +881,16 @@ function main() {
   // Initialize with ready state
   ui.update(0, 0, "Ready");
 
+  // Store monthly data for multi-page scans
+  let storedMonthlyData = {};
+
   function runScan() {
     console.log('🚀 Starting calculation...');
     ui.update(0, 0, "Calculating...");
     
     try {
       const result = scanFirstPageOrders();
-      ui.update(result.total, result.count, "Calculation complete");
+      ui.update(result.total, result.count, "Calculation complete", null, result.monthlyData);
       console.log(`✅ Calculation complete: $${result.total} from ${result.count} orders`);
     } catch (e) {
       console.error('Calculation error:', e);
@@ -690,11 +899,11 @@ function main() {
   }
 
   function clearResults() {
-    ui.update(0, 0, "Ready to calculate");
+    ui.update(0, 0, "Ready to calculate", null, {});
     console.log('🧹 Results cleared');
   }
 
-  // Handle "All Pages" scanning using background script
+  // Handle "All Pages" scanning using background script with monthly data
   function runAllPagesScan() {
     console.log('🚀 Starting all pages scan...');
     ui.update(0, 0, "Starting multi-page scan...");
@@ -705,6 +914,9 @@ function main() {
     const baseUrl = window.location.origin + window.location.pathname;
     const timeFilter = new URLSearchParams(window.location.search).get('timeFilter') || 'all';
     
+    // Initialize monthly data with first page data
+    storedMonthlyData = currentResult.monthlyData || {};
+    
     // Send message to background script to start multi-page scan
     if (typeof chrome !== 'undefined' && chrome.runtime) {
       chrome.runtime.sendMessage({
@@ -712,6 +924,7 @@ function main() {
         data: {
           totalAmount: currentResult.total,
           totalOrderCount: currentResult.count,
+          monthlyData: currentResult.monthlyData,
           currentPage: 1,
           expectedTotalOrders: null,
           maxPages: 20,
@@ -730,11 +943,20 @@ function main() {
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg.type === 'SCAN_UPDATE') {
         const currentTimePeriod = getSelectedTimePeriod();
-        ui.update(msg.data.totalAmount, msg.data.totalOrderCount, msg.data.status, currentTimePeriod);
+        // Update stored monthly data with the latest from background script
+        if (msg.data.monthlyData) {
+          storedMonthlyData = msg.data.monthlyData;
+        }
+        ui.update(msg.data.totalAmount, msg.data.totalOrderCount, msg.data.status, currentTimePeriod, storedMonthlyData);
       } else if (msg.type === 'SCAN_COMPLETE') {
         const currentTimePeriod = getSelectedTimePeriod();
-        ui.update(msg.data.totalAmount, msg.data.totalOrderCount, "Scan complete!", currentTimePeriod);
+        // Update stored monthly data with the final result
+        if (msg.data.monthlyData) {
+          storedMonthlyData = msg.data.monthlyData;
+        }
+        ui.update(msg.data.totalAmount, msg.data.totalOrderCount, "Scan complete!", currentTimePeriod, storedMonthlyData);
         console.log(`✅ All pages scan complete: $${msg.data.totalAmount} from ${msg.data.totalOrderCount} orders across ${msg.data.totalPages} pages`);
+        console.log(`📅 Complete monthly breakdown:`, storedMonthlyData);
       }
     });
   }

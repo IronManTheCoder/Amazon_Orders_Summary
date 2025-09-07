@@ -41,6 +41,7 @@ async function startTabNavigationScan(scanData, originalTabId) {
   const { 
     totalAmount: initialAmount, 
     totalOrderCount: initialCount, 
+    monthlyData: initialMonthlyData,
     currentPage, 
     expectedTotalOrders, 
     maxPages, 
@@ -50,6 +51,7 @@ async function startTabNavigationScan(scanData, originalTabId) {
   
   let totalAmount = initialAmount;
   let totalOrderCount = initialCount;
+  let allMonthlyData = initialMonthlyData || {};
   let pageNum = currentPage;
   
   try {
@@ -102,6 +104,17 @@ async function startTabNavigationScan(scanData, originalTabId) {
           totalAmount += pageResult.total;
           totalOrderCount += pageResult.count;
           
+          // Merge monthly data from this page
+          if (pageResult.monthlyData) {
+            for (const [month, data] of Object.entries(pageResult.monthlyData)) {
+              if (!allMonthlyData[month]) {
+                allMonthlyData[month] = { total: 0, count: 0 };
+              }
+              allMonthlyData[month].total += data.total;
+              allMonthlyData[month].count += data.count;
+            }
+          }
+          
           console.log(`Page ${pageNum}: $${pageResult.total} from ${pageResult.count} orders`);
           
           // Send update to original tab
@@ -111,6 +124,7 @@ async function startTabNavigationScan(scanData, originalTabId) {
               data: {
                 totalAmount,
                 totalOrderCount,
+                monthlyData: allMonthlyData,
                 status: `Page ${pageNum} complete`,
                 currentPage: pageNum
               }
@@ -146,6 +160,7 @@ async function startTabNavigationScan(scanData, originalTabId) {
         data: {
           totalAmount,
           totalOrderCount,
+          monthlyData: allMonthlyData,
           totalPages: pageNum
         }
       });
@@ -195,60 +210,163 @@ function scanCurrentPageOrders() {
   let totalAmount = 0;
   let orderCount = 0;
   const processedAmounts = new Set();
+  const monthlyData = {};
   
-  // Look for order containers
-  const orderSelectors = ['.a-box-group', '[class*="order"]', '[class*="shipment"]', '.a-card'];
+  // Look for order containers first - prioritize more specific selectors
+  const orderSelectors = [
+    'li.order-card__list',
+    '.order-card',
+    '.a-box-group',
+    '[class*="order"]',
+    '[class*="shipment"]',
+    '.a-card',
+    '[data-testid*="order"]',
+    '[class*="order-item"]'
+  ];
   
   let orderElements = [];
   for (const selector of orderSelectors) {
     orderElements = document.querySelectorAll(selector);
     if (orderElements.length > 0) {
+      console.log(`Found ${orderElements.length} elements with selector: ${selector}`);
       break;
     }
   }
   
-  // If no containers, look for elements with order text
+  // If no specific order containers, look for elements containing "Order placed" or "Total"
   if (orderElements.length === 0) {
     const allElements = document.querySelectorAll('*');
     orderElements = Array.from(allElements).filter(el => {
       const text = el.textContent;
+      // More specific filtering - must contain order-related text AND not be JavaScript
       return (text.includes('Order placed') || text.includes('Total')) && 
              !text.includes('var ') && 
              !text.includes('function') && 
-             text.length > 30 && text.length < 2000;
+             !text.includes('window.') &&
+             !text.includes('Buy it again') &&
+             !text.includes('Customers also bought') &&
+             text.length < 1000; // Reasonable length for order text
     });
+    console.log(`Found ${orderElements.length} potential order elements by content`);
   }
   
   // Process each order element
-  orderElements.forEach((element) => {
+  orderElements.forEach((element, index) => {
     const text = element.textContent;
     
-    // Skip JavaScript elements
-    if (text.includes('window.uet') || text.includes('performance.mark') || 
-        text.includes('function(') || text.length < 50) {
-      return;
+    // Look for the specific "Total" element structure - try multiple patterns
+    let totalElement = null;
+    let totalText = '';
+    
+    // Pattern 1: Original specific structure
+    totalElement = element.querySelector('.a-column.a-span2 .order-header__header-list-item .a-row:last-child .a-size-base');
+    
+    // Pattern 2: Alternative structure where amount is in any .a-row with .a-size-base
+    if (!totalElement) {
+      totalElement = element.querySelector('.a-column.a-span2 .order-header__header-list-item .a-row .a-size-base');
     }
     
-    // Look for dollar amounts
-    const moneyMatches = text.match(/\$(\d+(?:\.\d{2})?)/g);
+    // Pattern 3: Look for any element with "Total" text and then find the amount
+    if (!totalElement) {
+      const totalLabel = element.querySelector('.a-column.a-span2 .order-header__header-list-item .a-row .a-text-caps');
+      if (totalLabel && totalLabel.textContent.trim().toLowerCase().includes('total')) {
+        // Find the amount in the next sibling row
+        const nextRow = totalLabel.closest('.a-row').nextElementSibling;
+        if (nextRow) {
+          totalElement = nextRow.querySelector('.a-size-base');
+        }
+      }
+    }
     
-    if (moneyMatches && moneyMatches.length > 0) {
-      const amounts = moneyMatches.map(match => parseFloat(match.replace('$', '')));
-      const maxAmount = Math.max(...amounts);
+    // Pattern 4: Look for any .a-size-base that contains a dollar amount
+    if (!totalElement) {
+      const sizeBaseElements = element.querySelectorAll('.a-size-base');
+      for (const el of sizeBaseElements) {
+        if (el.textContent.match(/\$(\d+\.\d{2})/)) {
+          totalElement = el;
+          break;
+        }
+      }
+    }
+    
+    if (totalElement) {
+      totalText = totalElement.textContent.trim();
+      const totalMatch = totalText.match(/\$(\d+\.\d{2})/);
       
-      if (maxAmount >= 0.01 && !processedAmounts.has(maxAmount)) {
-        // Check if this looks like a real order
-        const hasOrderText = text.includes('Order placed') || text.includes('Total') || text.includes('Order #');
-        const hasMonth = /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b/i.test(text);
+      if (totalMatch) {
+        const orderTotal = parseFloat(totalMatch[1]);
         
-        if (hasOrderText && hasMonth) {
-          totalAmount += maxAmount;
-          orderCount++;
-          processedAmounts.add(maxAmount);
+        // Only count if it's a reasonable order amount and we haven't seen it before
+        if (orderTotal >= 0.01 && !processedAmounts.has(orderTotal)) {
+          // Check for order text in the parent element
+          const hasOrderText = text.includes('Order placed') || text.includes('Order #') || text.includes('Ordered');
+          
+          // Check for month names (expanded list) and extract date info
+          const monthMatch = text.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2}),?\s+(20\d{2})\b/i);
+          const hasMonth = monthMatch !== null;
+          
+          // Additional check: make sure this looks like an actual order
+          if (hasOrderText && hasMonth) {
+            // Extract month and year for monthly tracking
+            if (monthMatch) {
+              const monthName = monthMatch[1];
+              const year = monthMatch[3];
+              const monthKey = `${monthName} ${year}`;
+              
+              if (!monthlyData[monthKey]) {
+                monthlyData[monthKey] = { total: 0, count: 0 };
+              }
+              monthlyData[monthKey].total += orderTotal;
+              monthlyData[monthKey].count += 1;
+            }
+            
+            totalAmount += orderTotal;
+            orderCount++;
+            processedAmounts.add(orderTotal);
+          }
+        }
+      }
+    } else {
+      // Fallback to old method if the specific structure isn't found
+      const moneyMatches = text.match(/\$(\d+\.\d{2})/g);
+      
+      if (moneyMatches && moneyMatches.length > 0) {
+        // Extract the largest amount (likely the order total)
+        const amounts = moneyMatches.map(match => parseFloat(match.replace('$', '')));
+        const maxAmount = Math.max(...amounts);
+        
+        // Only count if it's a reasonable order amount and we haven't seen it before
+        if (maxAmount >= 0.01 && !processedAmounts.has(maxAmount)) {
+          // Check for order text
+          const hasOrderText = text.includes('Order placed') || text.includes('Total') || text.includes('Order #');
+          
+          // Check for month names (expanded list) and extract date info
+          const monthMatch = text.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2}),?\s+(20\d{2})\b/i);
+          const hasMonth = monthMatch !== null;
+          
+          // Additional check: make sure this looks like an actual order
+          if (hasOrderText && hasMonth) {
+            // Extract month and year for monthly tracking
+            if (monthMatch) {
+              const monthName = monthMatch[1];
+              const year = monthMatch[3];
+              const monthKey = `${monthName} ${year}`;
+              
+              if (!monthlyData[monthKey]) {
+                monthlyData[monthKey] = { total: 0, count: 0 };
+              }
+              monthlyData[monthKey].total += maxAmount;
+              monthlyData[monthKey].count += 1;
+            }
+            
+            totalAmount += maxAmount;
+            orderCount++;
+            processedAmounts.add(maxAmount);
+          }
         }
       }
     }
   });
   
-  return { total: totalAmount, count: orderCount };
+  return { total: totalAmount, count: orderCount, monthlyData: monthlyData };
 }
