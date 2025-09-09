@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Amazon Spend Dashboard",
+  "name": "Amazon Orders Dashboard",
   "description": "Shows your Amazon spend (e.g., this month) directly on the Your Orders page.",
   "version": "0.1.1",
   "permissions": ["storage", "tabs", "scripting"],
@@ -18,7 +18,12 @@
         "https://www.amazon.com/your-orders*",
         "https://www.amazon.com/gp/your-account/order-history*"
       ],
-      "js": ["content.js"],
+      "js": [
+        "modules/OrderScanner.js",
+        "modules/ChartRenderer.js", 
+        "modules/UIManager.js",
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]
