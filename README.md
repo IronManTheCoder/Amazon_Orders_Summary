@@ -87,7 +87,8 @@ The extension uses a clean, modular architecture for maintainability:
     ├── 🎨 UIManager.js       # UI management & events
     └── 🔄 BackgroundScanner.js # Multi-page scanning
 ```
-<img width="2542" height="1005" alt="image" src="https://github.com/user-attachments/assets/18a62874-b990-4d79-b49d-e3d8e96f0553" />
+<img width="2542" height="1005" alt="image" src="https://github.com/user-attachments/assets/2258d9df-4292-453b-a713-01d553450365" />
+
 <img width="1278" height="638" alt="image" src="https://github.com/user-attachments/assets/675c9476-5eeb-417c-b2f6-4f608a4bead2" />
 
 ### Key Components
