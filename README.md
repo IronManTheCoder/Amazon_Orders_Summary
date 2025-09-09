@@ -87,8 +87,14 @@ The extension uses a clean, modular architecture for maintainability:
     ├── 🎨 UIManager.js       # UI management & events
     └── 🔄 BackgroundScanner.js # Multi-page scanning
 ```
+### Chrome Extension Popup modal
+
+#### 🔍 **After Orders Page was loaded for the first time**
 <img width="2542" height="1005" alt="image" src="https://github.com/user-attachments/assets/2258d9df-4292-453b-a713-01d553450365" />
 
+#### 🔍 **After Use selected Calculate All Orders button**
+- Extracted order totals, dates, and metadata
+- Excluded returned orders/items
 <img width="1278" height="638" alt="image" src="https://github.com/user-attachments/assets/675c9476-5eeb-417c-b2f6-4f608a4bead2" />
 
 ### Key Components
@@ -96,6 +102,7 @@ The extension uses a clean, modular architecture for maintainability:
 #### 🔍 **OrderScanner**
 - Detects Amazon order elements using multiple patterns
 - Extracts order totals, dates, and metadata
+- Excludes returned orders/items
 - Validates and filters legitimate orders
 - Handles various Amazon page layouts
 
